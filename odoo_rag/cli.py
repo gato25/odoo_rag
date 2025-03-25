@@ -136,59 +136,62 @@ def start_interactive_session(args: argparse.Namespace) -> None:
     print("  /module <module_name>: Set module filter")
     print("  /model <model_name>: Set model filter")
     print("  /clear: Clear all filters")
+    print("  /modules: List all available modules")
     
     # Session state
-    module_filter = None
-    model_filter = None
+    current_filter = None
     
     while True:
         # Show current filters
         filter_info = []
-        if module_filter:
-            filter_info.append(f"module: {module_filter}")
-        if model_filter:
-            filter_info.append(f"model: {model_filter}")
+        if current_filter:
+            filter_info.append(f"module: {current_filter.get('module')}")
+            filter_info.append(f"model: {current_filter.get('model_name')}")
         
         if filter_info:
             print(f"\nActive filters: {', '.join(filter_info)}")
         
         # Get user input
         try:
-            user_input = input("\nQuestion: ")
+            question = input("\nQuestion: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nExiting...")
             break
         
-        if user_input.lower() in ['exit', 'quit']:
+        if question.lower() in ['exit', 'quit']:
             print("Exiting...")
             break
         
-        # Process special commands
-        if user_input.startswith('/'):
-            parts = user_input.split(maxsplit=1)
+        # Check for special commands
+        if question.startswith('/'):
+            parts = question.split()
             command = parts[0].lower()
             
-            if command == '/module' and len(parts) > 1:
-                module_filter = parts[1]
-                print(f"Set module filter to: {module_filter}")
+            if command == '/clear':
+                current_filter = None
+                print("Filters cleared")
+                continue
+            elif command == '/module' and len(parts) > 1:
+                module_name = parts[1]
+                current_filter = {"module": module_name}
+                print(f"Set filter to module: {module_name}")
                 continue
             elif command == '/model' and len(parts) > 1:
-                model_filter = parts[1]
-                print(f"Set model filter to: {model_filter}")
+                model_name = parts[1]
+                current_filter = {"model_name": model_name}
+                print(f"Set filter to model: {model_name}")
                 continue
-            elif command == '/clear':
-                module_filter = None
-                model_filter = None
-                print("Cleared all filters")
+            elif command == '/modules':
+                # Use the new list_all_modules method
+                result = rag.list_all_modules()
+                print("\n" + result["result"])
                 continue
         
         # Query the RAG system with the current filters
-        if module_filter:
-            result = rag.answer_about_module(question=user_input, module_name=module_filter)
-        elif model_filter:
-            result = rag.answer_about_model(question=user_input, model_name=model_filter)
+        if current_filter:
+            result = rag.answer_about_module(question=question, module_name=current_filter.get('module'))
         else:
-            result = rag.answer_question(question=user_input)
+            result = rag.answer_question(question=question)
         
         # Print the answer
         print("\nAnswer:")

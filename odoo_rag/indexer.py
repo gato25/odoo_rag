@@ -1,6 +1,5 @@
 import os
 import re
-import ast
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 import xml.etree.ElementTree as ET
@@ -34,171 +33,94 @@ class OdooModuleParser:
         if not manifest_path.exists():
             return {}
         
-        # Read the file and evaluate it safely
-        with open(manifest_path, 'r') as f:
+        # Read the file content
+        with open(manifest_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        try:
-            manifest_dict = ast.literal_eval(content)
-            return manifest_dict
-        except (SyntaxError, ValueError) as e:
-            logger.error(f"Error parsing manifest for {module_name}: {e}")
-            return {}
-    
-    def parse_model_file(self, file_path: Path) -> List[Dict]:
-        """Parse a Python file containing Odoo model definitions"""
-        models = []
-        
-        with open(file_path, 'r') as f:
-            content = f.read()
-        
-        try:
-            # Parse the Python file
-            tree = ast.parse(content)
-            
-            # Extract classes that inherit from Odoo models
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    # Check if class inherits from an Odoo model
-                    if self._is_odoo_model(node):
-                        model_info = self._extract_model_info(node, file_path)
-                        models.append(model_info)
-        
-        except Exception as e:
-            logger.error(f"Error parsing {file_path}: {e}")
-        
-        return models
-    
-    def _is_odoo_model(self, class_def: ast.ClassDef) -> bool:
-        """Check if a class definition inherits from an Odoo model"""
-        for base in class_def.bases:
-            if isinstance(base, ast.Name) and base.id in ('Model', 'TransientModel', 'AbstractModel'):
-                return True
-            if isinstance(base, ast.Attribute):
-                attr_str = f"{self._get_attribute_full_name(base)}"
-                if attr_str in ('models.Model', 'models.TransientModel', 'models.AbstractModel'):
-                    return True
-        return False
-    
-    def _get_attribute_full_name(self, attr: ast.Attribute) -> str:
-        """Get the full dotted name of an attribute"""
-        parts = []
-        current = attr
-        while isinstance(current, ast.Attribute):
-            parts.append(current.attr)
-            current = current.value
-        if isinstance(current, ast.Name):
-            parts.append(current.id)
-        return '.'.join(reversed(parts))
-    
-    def _extract_model_info(self, class_def: ast.ClassDef, file_path: Path) -> Dict:
-        """Extract model information from a class definition"""
-        model_info = {
-            'name': class_def.name,
-            'file_path': str(file_path),
-            'line_start': class_def.lineno,
-            'line_end': class_def.end_lineno,
-            '_name': None,  # Technical name, e.g. 'res.partner'
-            '_inherit': None,  # Inherited model(s)
-            '_description': None,  # User-friendly description
-            'fields': [],
-            'methods': []
+        # Create a simple metadata dict (without evaluating the Python code)
+        manifest_dict = {
+            'raw_content': content,
+            'file_path': str(manifest_path)
         }
         
-        # Extract class attributes and methods
-        for node in class_def.body:
-            # Extract class variables like _name, _inherit, etc.
-            if isinstance(node, ast.Assign):
-                targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
-                if targets:
-                    name = targets[0]
-                    if name in ('_name', '_inherit', '_description'):
-                        if isinstance(node.value, ast.Constant):
-                            model_info[name] = node.value.value
-                    elif self._is_field_definition(node.value):
-                        field_info = self._extract_field_info(name, node.value)
-                        model_info['fields'].append(field_info)
+        # Extract basic info with regex
+        name_match = re.search(r"['\"]name['\"]\s*:\s*['\"]([^'\"]+)['\"]", content)
+        if name_match:
+            manifest_dict['name'] = name_match.group(1)
+        
+        version_match = re.search(r"['\"]version['\"]\s*:\s*['\"]([^'\"]+)['\"]", content)
+        if version_match:
+            manifest_dict['version'] = version_match.group(1)
             
-            # Extract methods
-            elif isinstance(node, ast.FunctionDef):
-                method_info = {
-                    'name': node.name,
-                    'line_start': node.lineno,
-                    'line_end': node.end_lineno,
-                    'decorators': [d.id for d in node.decorator_list if isinstance(d, ast.Name)]
-                }
-                model_info['methods'].append(method_info)
-        
-        return model_info
+        depends_match = re.search(r"['\"]depends['\"]\s*:\s*\[(.*?)\]", content, re.DOTALL)
+        if depends_match:
+            # Extract module names from depends list
+            depends_str = depends_match.group(1)
+            depends = re.findall(r"['\"]([^'\"]+)['\"]", depends_str)
+            manifest_dict['depends'] = depends
+            
+        return manifest_dict
     
-    def _is_field_definition(self, node: ast.AST) -> bool:
-        """Check if an AST node represents an Odoo field definition"""
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-                if node.func.value.id == 'fields':
-                    return True
-        return False
-    
-    def _extract_field_info(self, name: str, call_node: ast.Call) -> Dict:
-        """Extract field information from a fields.X() call"""
-        field_info = {
-            'name': name,
-            'type': None,
-            'string': None,
-            'required': False,
-            'readonly': False,
-            'comodel_name': None,  # For relational fields
-        }
-        
-        # Get field type
-        if isinstance(call_node.func, ast.Attribute):
-            field_info['type'] = call_node.func.attr
-        
-        # Extract keyword arguments
-        for kw in call_node.keywords:
-            if kw.arg in field_info:
-                if isinstance(kw.value, ast.Constant):
-                    field_info[kw.arg] = kw.value.value
-        
-        return field_info
-    
-    def parse_view_file(self, file_path: Path) -> List[Dict]:
-        """Parse an XML view file to extract view definitions"""
-        views = []
-        
+    def extract_file_content(self, file_path: Path, file_type: str) -> Dict:
+        """Extract the raw content from a file with basic metadata"""
         try:
-            tree = ET.parse(file_path)
-            root = tree.getroot()
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+                
+            # Get the module name from the path
+            parts = file_path.parts
+            module_index = next((i for i, part in enumerate(parts) if part in self.modules), -1)
+            module_name = parts[module_index] if module_index >= 0 else "unknown"
             
-            # Find all record elements that define views
-            for record in root.findall(".//record"):
-                model = record.get('model')
-                if model == 'ir.ui.view':
-                    view_info = {
-                        'id': record.get('id'),
-                        'name': None,
-                        'model': None,
-                        'type': None,
-                        'arch': None,
-                        'inherit_id': None,
-                        'file_path': str(file_path)
-                    }
+            # Create a simple content dict
+            content_dict = {
+                'content': content,
+                'file_path': str(file_path),
+                'file_name': file_path.name,
+                'file_type': file_type,
+                'module': module_name,
+                'size': len(content)
+            }
+            
+            # Add type-specific metadata
+            if file_type == 'python':
+                # Basic regex extraction of classes and models
+                model_match = re.search(r"_name\s*=\s*['\"]([^'\"]+)['\"]", content)
+                if model_match:
+                    content_dict['model_name'] = model_match.group(1)
+                
+                # Extract class definitions
+                class_defs = re.findall(r"class\s+(\w+)\s*\(([^)]+)\):", content)
+                content_dict['classes'] = [
+                    {'name': cls_name, 'base': base.strip()} 
+                    for cls_name, base in class_defs
+                ]
+                
+            elif file_type == 'xml':
+                # For XML files, try to identify view types, models, etc.
+                if '<record' in content and 'ir.ui.view' in content:
+                    content_dict['has_views'] = True
+                if '<template' in content:
+                    content_dict['has_templates'] = True
+                if '<menuitem' in content:
+                    content_dict['has_menus'] = True
                     
-                    # Extract field values
-                    for field in record.findall('field'):
-                        field_name = field.get('name')
-                        if field_name in view_info:
-                            if field_name == 'arch' and field.get('type') == 'xml':
-                                view_info[field_name] = ET.tostring(field[0], encoding='unicode') if len(field) > 0 else None
-                            else:
-                                view_info[field_name] = field.text
-                    
-                    views.append(view_info)
-        
+                # Try to extract model information from views
+                model_matches = re.findall(r"model=['\"]([^'\"]+)['\"]", content)
+                if model_matches:
+                    content_dict['referenced_models'] = list(set(model_matches))
+            
+            return content_dict
+            
         except Exception as e:
-            logger.error(f"Error parsing view file {file_path}: {e}")
-        
-        return views
+            logger.error(f"Error extracting content from {file_path}: {e}")
+            return {
+                'content': f"Error: {e}",
+                'file_path': str(file_path),
+                'file_name': file_path.name,
+                'file_type': file_type,
+                'error': str(e)
+            }
     
     def index_module(self, module_name: str) -> Dict:
         """Index a single module and return its structure"""
@@ -207,37 +129,41 @@ class OdooModuleParser:
             'name': module_name,
             'path': str(module_path),
             'manifest': self.parse_manifest(module_name),
-            'models': [],
-            'views': [],
-            'scripts': [],
-            'data': []
+            'files': []
         }
         
-        # Parse Python files for models
-        model_dir = module_path / 'models'
-        if model_dir.exists():
-            for py_file in model_dir.glob('*.py'):
-                module_data['models'].extend(self.parse_model_file(py_file))
+        # Walk through the module directory and process all files
+        for root, _, files in os.walk(module_path):
+            for file in files:
+                file_path = Path(root) / file
+                relative_path = file_path.relative_to(module_path)
+                
+                # Skip some files we don't want to index
+                if file.startswith('.') or file.endswith('.pyc'):
+                    continue
+                
+                # Determine file type
+                if file.endswith('.py'):
+                    file_type = 'python'
+                elif file.endswith('.xml'):
+                    file_type = 'xml'
+                elif file.endswith('.js'):
+                    file_type = 'javascript'
+                elif file.endswith('.css'):
+                    file_type = 'css'
+                elif file.endswith('.scss'):
+                    file_type = 'scss'
+                elif file.endswith('.csv'):
+                    file_type = 'csv'
+                else:
+                    file_type = 'other'
+                
+                # Extract content
+                content_dict = self.extract_file_content(file_path, file_type)
+                content_dict['relative_path'] = str(relative_path)
+                module_data['files'].append(content_dict)
         
-        # Parse XML files for views
-        for xml_file in module_path.glob('**/*.xml'):
-            module_data['views'].extend(self.parse_view_file(xml_file))
-        
-        # Index JavaScript files
-        for js_file in module_path.glob('**/*.js'):
-            module_data['scripts'].append({
-                'path': str(js_file),
-                'name': js_file.name
-            })
-        
-        # Index CSV/data files
-        for data_file in module_path.glob('**/*.csv'):
-            module_data['data'].append({
-                'path': str(data_file),
-                'name': data_file.name,
-                'type': 'csv'
-            })
-            
+        logger.info(f"Indexed module {module_name} with {len(module_data['files'])} files")
         self.modules[module_name] = module_data
         return module_data
     
@@ -248,82 +174,117 @@ class OdooModuleParser:
             self.index_module(module_name)
         return self.modules
     
-    def extract_chunks_for_embedding(self) -> List[Dict]:
+    def create_markdown_chunk(self, content_dict: Dict) -> str:
+        """Create a Markdown representation of a content chunk"""
+        file_path = content_dict.get('file_path', 'unknown')
+        file_type = content_dict.get('file_type', 'unknown')
+        module = content_dict.get('module', 'unknown')
+        content = content_dict.get('content', '')
+        
+        # Create header with metadata
+        header = f"# {os.path.basename(file_path)}\n\n"
+        header += f"**Module:** {module}\n"
+        header += f"**Path:** {file_path}\n"
+        header += f"**Type:** {file_type}\n"
+        
+        # Add model info if available
+        if 'model_name' in content_dict:
+            header += f"**Model:** {content_dict['model_name']}\n"
+        
+        # Add class info if available
+        if 'classes' in content_dict and content_dict['classes']:
+            header += "\n**Classes:**\n"
+            for cls in content_dict['classes']:
+                header += f"- {cls['name']} (inherits {cls['base']})\n"
+        
+        # Add referenced models if available
+        if 'referenced_models' in content_dict and content_dict['referenced_models']:
+            header += "\n**Referenced Models:**\n"
+            for model in content_dict['referenced_models']:
+                header += f"- {model}\n"
+        
+        # Add a divider
+        header += "\n---\n\n"
+        
+        # Add code block with appropriate syntax highlighting
+        code_block = f"```{file_type}\n{content}\n```"
+        
+        return header + code_block
+    
+    def chunk_content(self, content: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+        """Split a long content into overlapping chunks"""
+        chunks = []
+        
+        # If content is shorter than chunk_size, return it as is
+        if len(content) <= chunk_size:
+            return [content]
+        
+        # Split content into chunks with overlap
+        for i in range(0, len(content), chunk_size - overlap):
+            chunk = content[i:i + chunk_size]
+            chunks.append(chunk)
+        
+        return chunks
+    
+    def extract_chunks_for_embedding(self, chunk_size: int = 2000, overlap: int = 400) -> List[Dict]:
         """Extract chunks of code/content suitable for embedding"""
         chunks = []
         
         for module_name, module_data in self.modules.items():
-            # Add module manifest as a chunk
-            manifest_str = str(module_data['manifest'])
-            chunks.append({
-                'content': f"Module: {module_name}\nManifest: {manifest_str}",
-                'metadata': {
+            # Add manifest as a chunk
+            manifest = module_data.get('manifest', {})
+            if manifest and 'raw_content' in manifest:
+                manifest_content = self.create_markdown_chunk({
+                    'file_path': manifest.get('file_path', f"{module_name}/__manifest__.py"),
+                    'file_type': 'python',
                     'module': module_name,
-                    'type': 'manifest',
-                    'path': module_data['path']
-                }
-            })
-            
-            # Add model definitions as chunks
-            for model in module_data['models']:
-                model_content = f"Model: {model.get('_name') or model['name']}\n"
-                model_content += f"Class: {model['name']}\n"
-                
-                if model.get('_description'):
-                    model_content += f"Description: {model['_description']}\n"
-                
-                if model.get('_inherit'):
-                    model_content += f"Inherits: {model['_inherit']}\n"
-                
-                # Add fields
-                if model['fields']:
-                    model_content += "Fields:\n"
-                    for field in model['fields']:
-                        model_content += f"  - {field['name']} ({field['type']}): {field.get('string')}\n"
-                
-                # Add methods
-                if model['methods']:
-                    model_content += "Methods:\n"
-                    for method in model['methods']:
-                        model_content += f"  - {method['name']}"
-                        if method['decorators']:
-                            model_content += f" (decorated with: {', '.join(method['decorators'])})"
-                        model_content += "\n"
+                    'content': manifest.get('raw_content', ''),
+                    'type': 'manifest'
+                })
                 
                 chunks.append({
-                    'content': model_content,
+                    'content': manifest_content,
                     'metadata': {
                         'module': module_name,
-                        'type': 'model',
-                        'model_name': model.get('_name') or model['name'],
-                        'path': model['file_path'],
-                        'line_start': model['line_start'],
-                        'line_end': model['line_end']
+                        'type': 'manifest',
+                        'file_path': manifest.get('file_path', f"{module_name}/__manifest__.py")
                     }
                 })
             
-            # Add views as chunks
-            for view in module_data['views']:
-                view_content = f"View: {view.get('name')}\n"
-                view_content += f"Model: {view.get('model')}\n"
-                view_content += f"Type: {view.get('type')}\n"
+            # Process each file in the module
+            for file_dict in module_data.get('files', []):
+                # Create Markdown representation
+                md_content = self.create_markdown_chunk(file_dict)
                 
-                if view.get('inherit_id'):
-                    view_content += f"Inherits view: {view.get('inherit_id')}\n"
-                
-                if view.get('arch'):
-                    view_content += f"Architecture:\n{view['arch']}"
-                
-                chunks.append({
-                    'content': view_content,
-                    'metadata': {
-                        'module': module_name,
-                        'type': 'view',
-                        'view_id': view.get('id'),
-                        'path': view['file_path']
-                    }
-                })
+                # Split into chunks if needed
+                if len(md_content) > chunk_size:
+                    content_chunks = self.chunk_content(md_content, chunk_size, overlap)
+                    
+                    for i, content_chunk in enumerate(content_chunks):
+                        chunks.append({
+                            'content': content_chunk,
+                            'metadata': {
+                                'module': module_name,
+                                'type': file_dict.get('file_type', 'unknown'),
+                                'file_path': file_dict.get('file_path', 'unknown'),
+                                'chunk_index': i,
+                                'total_chunks': len(content_chunks),
+                                'model_name': file_dict.get('model_name', None)
+                            }
+                        })
+                else:
+                    # Add as a single chunk
+                    chunks.append({
+                        'content': md_content,
+                        'metadata': {
+                            'module': module_name,
+                            'type': file_dict.get('file_type', 'unknown'),
+                            'file_path': file_dict.get('file_path', 'unknown'),
+                            'model_name': file_dict.get('model_name', None)
+                        }
+                    })
         
+        logger.info(f"Generated {len(chunks)} chunks for embedding")
         return chunks
 
 if __name__ == "__main__":

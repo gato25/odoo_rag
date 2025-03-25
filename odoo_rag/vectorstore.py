@@ -43,6 +43,28 @@ class OdooVectorStore:
         """Ensure that the specified directory exists"""
         os.makedirs(directory, exist_ok=True)
     
+    def _clean_metadata(self, metadata: Dict) -> Dict:
+        """
+        Clean metadata to ensure it only contains valid types for ChromaDB
+        
+        Args:
+            metadata: Metadata dictionary to clean
+            
+        Returns:
+            Cleaned metadata dictionary with only valid types
+        """
+        cleaned = {}
+        for key, value in metadata.items():
+            # Only include non-None values
+            if value is not None:
+                # Convert any complex types to strings
+                if isinstance(value, (str, int, float, bool)):
+                    cleaned[key] = value
+                else:
+                    # Convert lists, dicts, and other objects to strings
+                    cleaned[key] = str(value)
+        return cleaned
+    
     def add_chunks(self, chunks: List[Dict]) -> None:
         """
         Add chunks to the vector store
@@ -54,31 +76,43 @@ class OdooVectorStore:
             logger.warning("No chunks to add")
             return
         
-        # Prepare data for ChromaDB
-        ids = []
-        documents = []
-        metadatas = []
+        # Process chunks in batches of 5000 to stay under ChromaDB's limit
+        batch_size = 5000
+        total_chunks = len(chunks)
         
-        for i, chunk in enumerate(chunks):
-            # Generate a unique ID
-            chunk_id = f"chunk_{self.collection.count() + i}"
+        for i in range(0, total_chunks, batch_size):
+            batch = chunks[i:i + batch_size]
             
-            # Extract content and metadata
-            content = chunk['content']
-            metadata = chunk['metadata']
+            # Prepare data for ChromaDB
+            ids = []
+            documents = []
+            metadatas = []
             
-            ids.append(chunk_id)
-            documents.append(content)
-            metadatas.append(metadata)
+            for j, chunk in enumerate(batch):
+                # Generate a unique ID
+                chunk_id = f"chunk_{self.collection.count() + j}"
+                
+                # Extract content and metadata
+                content = chunk['content']
+                metadata = chunk['metadata']
+                
+                # Clean metadata to ensure it contains only valid types
+                cleaned_metadata = self._clean_metadata(metadata)
+                
+                ids.append(chunk_id)
+                documents.append(content)
+                metadatas.append(cleaned_metadata)
+            
+            # Add documents to ChromaDB
+            self.collection.add(
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas
+            )
+            
+            logger.info(f"Added batch of {len(batch)} chunks to vector store (total: {min(i + batch_size, total_chunks)}/{total_chunks})")
         
-        # Add documents to ChromaDB
-        self.collection.add(
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas
-        )
-        
-        logger.info(f"Added {len(chunks)} chunks to vector store")
+        logger.info(f"Successfully added all {total_chunks} chunks to vector store")
     
     def search(self, query: str, filter: Optional[Dict] = None, k: int = 5) -> List[Dict]:
         """

@@ -62,6 +62,16 @@ class OdooRAG:
             "Question: {query_str}\n\n"
             "Answer:"
         )
+        
+        # Add specialized template for module listing
+        self.module_list_template = (
+            "You are an Odoo expert assistant that helps developers understand the available modules.\n"
+            "List all unique modules found in the context, including their names and brief descriptions if available.\n"
+            "Make sure to format the output as a numbered list and include ALL unique modules.\n"
+            "Context:\n{context_str}\n\n"
+            "Question: {query_str}\n\n"
+            "Answer:"
+        )
     
     def _format_context(self, documents: List[Dict]) -> str:
         """
@@ -103,6 +113,11 @@ class OdooRAG:
         """
         question_lower = question.lower()
         
+        # Check for module listing questions
+        module_list_keywords = ["list modules", "list all modules", "show modules", "available modules", "what modules"]
+        if any(keyword in question_lower for keyword in module_list_keywords):
+            return self.module_list_template
+            
         # Check for model-related questions
         model_keywords = ["model", "field", "orm", "inheritance", "method", "record", "database"]
         view_keywords = ["view", "form", "tree", "kanban", "xml", "qweb", "ui", "button", "action"]
@@ -209,6 +224,47 @@ class OdooRAG:
         answer = message.content[0].text
         
         # Return the result
+        return {
+            "result": answer,
+            "source_documents": docs
+        }
+    
+    def list_all_modules(self) -> Dict[str, Any]:
+        """
+        Get a comprehensive list of all available modules
+        
+        Returns:
+            Dict containing the list of modules and their metadata
+        """
+        # Search specifically for manifest files to get module information
+        docs = self.vector_store.search(
+            query="manifest module information",
+            filter={"type": "manifest"},
+            k=100  # Increase the number to get more modules
+        )
+        
+        # Format the context
+        context_str = self._format_context(docs)
+        
+        # Use the module list template
+        prompt = self.module_list_template.format(
+            context_str=context_str,
+            query_str="List all available modules with their descriptions"
+        )
+        
+        # Get response from Claude
+        message = self.client.messages.create(
+            model=self.model_name,
+            max_tokens=1000,
+            temperature=self.temperature,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+        
+        # Process the response
+        answer = message.content[0].text
+        
         return {
             "result": answer,
             "source_documents": docs
