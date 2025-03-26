@@ -32,10 +32,20 @@ def setup_argparse() -> argparse.ArgumentParser:
     query_parser.add_argument('--persist-dir', type=str, default='chroma_db', help='Directory where the vector store is persisted')
     query_parser.add_argument('--module', type=str, help='Optional module to restrict the search to')
     query_parser.add_argument('--model', type=str, help='Optional model to restrict the search to')
-    query_parser.add_argument('--llm-model', type=str, default='claude-3-sonnet-20240229', 
+    query_parser.add_argument('--llm-model', type=str, default='claude-3-5-haiku-20241022', 
                              help='Claude model to use (e.g., claude-3-sonnet-20240229, claude-3-opus-20240229)')
     query_parser.add_argument('--temperature', type=float, default=0.0, help='Temperature for the LLM')
     query_parser.add_argument('--output-format', type=str, choices=['text', 'json'], default='text', help='Output format')
+    
+    # Diagram command
+    diagram_parser = subparsers.add_parser('diagram', help='Generate a sequence diagram for a business process')
+    diagram_parser.add_argument('--process', type=str, required=True, help='Name or description of the business process')
+    diagram_parser.add_argument('--module', type=str, help='Optional module to restrict the search to')
+    diagram_parser.add_argument('--persist-dir', type=str, default='chroma_db', help='Directory where the vector store is persisted')
+    diagram_parser.add_argument('--llm-model', type=str, default='claude-3-5-haiku-20241022',
+                             help='Claude model to use (e.g., claude-3-5-haiku-20241022, claude-3-sonnet-20240229)')
+    diagram_parser.add_argument('--temperature', type=float, default=0.0, help='Temperature for the LLM')
+    diagram_parser.add_argument('--output-file', type=str, help='Optional file to save the diagram to')
     
     # Interactive command
     interactive_parser = subparsers.add_parser('interactive', help='Start an interactive session')
@@ -108,6 +118,49 @@ def query_rag(args: argparse.Namespace) -> None:
                 source = metadata.get('file_path', 'Unknown')
                 print(f"{i+1}. {source}")
 
+def generate_diagram(args: argparse.Namespace) -> None:
+    """Generate a sequence diagram for a business process"""
+    logger.info(f"Generating sequence diagram for process: {args.process}")
+    
+    # Check if the vector store exists
+    if not os.path.exists(args.persist_dir):
+        logger.error(f"Vector store not found at {args.persist_dir}. Please index modules first.")
+        return
+    
+    # Check if Anthropic API key is set
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        logger.error("ANTHROPIC_API_KEY environment variable not set. Please set it in your .env file.")
+        return
+    
+    # Create the vector store
+    vector_store = OdooVectorStore(persist_directory=args.persist_dir)
+    
+    # Create the RAG system
+    rag = OdooRAG(vector_store=vector_store, model_name=args.llm_model, temperature=args.temperature)
+    
+    # Generate the sequence diagram
+    result = rag.generate_sequence_diagram(process_name=args.process, module_name=args.module)
+    
+    # Extract the diagram content
+    diagram = result.get('result', 'Could not generate diagram.')
+    
+    # Display or save the diagram
+    if args.output_file:
+        with open(args.output_file, 'w') as f:
+            f.write(diagram)
+        logger.info(f"Diagram saved to {args.output_file}")
+        print(f"Diagram saved to {args.output_file}")
+    else:
+        print("\nSequence Diagram:")
+        print(diagram)
+        
+        if 'source_documents' in result and result['source_documents']:
+            print("\nSources:")
+            for i, doc in enumerate(result['source_documents'][:3]):  # Show top 3 sources
+                metadata = doc.get('metadata', {})
+                source = metadata.get('file_path', 'Unknown')
+                print(f"{i+1}. {source}")
+
 def start_interactive_session(args: argparse.Namespace) -> None:
     """Start an interactive RAG session"""
     # Check if the vector store exists
@@ -137,6 +190,7 @@ def start_interactive_session(args: argparse.Namespace) -> None:
     print("  /model <model_name>: Set model filter")
     print("  /clear: Clear all filters")
     print("  /modules: List all available modules")
+    print("  /diagram <process_name>: Generate sequence diagram for business process")
     
     # Session state
     current_filter = None
@@ -186,6 +240,14 @@ def start_interactive_session(args: argparse.Namespace) -> None:
                 result = rag.list_all_modules()
                 print("\n" + result["result"])
                 continue
+            elif command == '/diagram' and len(parts) > 1:
+                # Generate a sequence diagram
+                process_name = ' '.join(parts[1:])
+                module_filter = current_filter.get('module') if current_filter else None
+                result = rag.generate_sequence_diagram(process_name=process_name, module_name=module_filter)
+                print("\nSequence Diagram:")
+                print(result["result"])
+                continue
         
         # Query the RAG system with the current filters
         if current_filter:
@@ -216,6 +278,8 @@ def main() -> None:
         query_rag(args)
     elif args.command == 'interactive':
         start_interactive_session(args)
+    elif args.command == 'diagram':
+        generate_diagram(args)
     else:
         parser.print_help()
 

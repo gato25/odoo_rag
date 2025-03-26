@@ -2,3 +2,4 @@ chroma_db
 .env
 odoo_rag.egg-info
 venv
+frontend

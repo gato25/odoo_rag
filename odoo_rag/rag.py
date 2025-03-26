@@ -72,6 +72,24 @@ class OdooRAG:
             "Question: {query_str}\n\n"
             "Answer:"
         )
+        
+        # Add specialized template for business process diagrams
+        self.sequence_diagram_template = (
+            "You are an Odoo expert that creates MermaidJS sequence diagrams of business processes.\n"
+            "Based on the provided context about an Odoo module or feature, create a comprehensive MermaidJS sequence diagram\n"
+            "that shows the flow of business processes, including actors, models, and key methods.\n\n"
+            "Focus on the main business flows and include:\n"
+            "1. All relevant actors (users, system roles)\n"
+            "2. Key models and their interactions\n"
+            "3. Important method calls that represent business logic\n"
+            "4. UI interactions where relevant\n\n"
+            "The diagram should represent the actual implementation details found in the context,\n"
+            "not generic or hypothetical flows. Be specific to the code provided.\n\n"
+            "Use proper MermaidJS sequence diagram syntax, enclosed in ```mermaid blocks.\n\n"
+            "Context:\n{context_str}\n\n"
+            "Question: {query_str}\n\n"
+            "Answer with a MermaidJS sequence diagram:"
+        )
     
     def _format_context(self, documents: List[Dict]) -> str:
         """
@@ -113,6 +131,12 @@ class OdooRAG:
         """
         question_lower = question.lower()
         
+        # Check for diagram generation requests
+        diagram_keywords = ["sequence diagram", "process diagram", "flow diagram", "mermaid", "business flow", 
+                          "business process", "sequence flow", "workflow diagram"]
+        if any(keyword in question_lower for keyword in diagram_keywords):
+            return self.sequence_diagram_template
+            
         # Check for module listing questions
         module_list_keywords = ["list modules", "list all modules", "show modules", "available modules", "what modules"]
         if any(keyword in question_lower for keyword in module_list_keywords):
@@ -256,6 +280,54 @@ class OdooRAG:
         message = self.client.messages.create(
             model=self.model_name,
             max_tokens=1000,
+            temperature=self.temperature,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+        
+        # Process the response
+        answer = message.content[0].text
+        
+        return {
+            "result": answer,
+            "source_documents": docs
+        }
+    
+    def generate_sequence_diagram(self, process_name: str, module_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Generate a MermaidJS sequence diagram for a business process
+        
+        Args:
+            process_name: The name or description of the business process
+            module_name: Optional module name to restrict the search
+            
+        Returns:
+            Dict containing the diagram and source documents
+        """
+        # Create a search query that combines the process name with relevant keywords
+        query = f"business process {process_name} workflow sequence"
+        
+        # Set up filter if module is specified
+        filter_dict = {"module": module_name} if module_name else None
+        
+        # Get more context documents for a comprehensive diagram
+        docs = self.vector_store.search(query=query, filter=filter_dict, k=10)
+        
+        # Format the context
+        context_str = self._format_context(docs)
+        
+        # Use the sequence diagram template
+        prompt = self.sequence_diagram_template.format(
+            context_str=context_str,
+            query_str=f"Create a sequence diagram for the {process_name} process" + 
+                     (f" in the {module_name} module" if module_name else "")
+        )
+        
+        # Get response from Claude with increased token limit for diagrams
+        message = self.client.messages.create(
+            model=self.model_name,
+            max_tokens=2000,  # Increased for complex diagrams
             temperature=self.temperature,
             messages=[
                 {"role": "user", "content": prompt}
